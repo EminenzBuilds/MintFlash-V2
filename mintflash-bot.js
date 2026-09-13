@@ -690,6 +690,33 @@ async function runMintAndReport(intent) {
   }
 }
 
+// Reports results for the pre-signed public-stage path, where broadcasting
+// already happened inside ticker.js's watchAndFirePublic — this must NOT
+// call performMint again, which would build and send a second, separate
+// transaction on top of the one already sent.
+async function reportPresignedResults(intent, presigned) {
+  const chain = config.chains[intent.chain];
+  for (const [, info] of Object.entries(presigned)) {
+    if (info.error) {
+      await send(intent.chatId, `${maskAddress(info.wallet?.address || '')}\n❌ ${info.error}`, replyExtra(intent));
+      if (info.wallet) postDiscord({ success: false, intent, wallet: info.wallet, errorLine: info.error }).catch(() => {});
+      continue;
+    }
+    await send(intent.chatId, `🚀 ${maskAddress(info.wallet.address)} sent via *SeaDrop.mintPublic (pre-signed)*\n\`${info.tx.hash}\``, replyExtra(intent));
+    try {
+      const receipt = await info.tx.wait();
+      await send(
+        intent.chatId,
+        `✅ Confirmed block \`${receipt.blockNumber}\`\n[tx](${chain.explorer}${info.tx.hash})`,
+        replyExtra(intent)
+      );
+      postDiscord({ success: true, intent, wallet: info.wallet, tx: info.tx }).catch(() => {});
+    } catch (e) {
+      await send(intent.chatId, `⚠️ Sent but may have reverted: ${mint.errReason(e)}`, replyExtra(intent));
+    }
+  }
+}
+
 async function onScheduledFire(userId, entry, extra) {
   schedules.remove(userId, entry.id);
   const intent = {
@@ -707,7 +734,8 @@ async function onScheduledFire(userId, entry, extra) {
     stageType: entry.stageType,
     addresses: entry.addresses || null,
     confirmationMessageId: entry.confirmationMessageId,
-    prebuiltByWallet: extra.prebuiltByWallet || null
+    prebuiltByWallet: extra.prebuiltByWallet || null,
+    prefetchedOverrides: extra.prefetchedOverrides || null
   };
   if (extra.locked) {
     await send(entry.chatId, `🔒 *${entry.label}* fired while locked. /unlock and /mint if still open.`, replyExtra(intent));
@@ -715,6 +743,10 @@ async function onScheduledFire(userId, entry, extra) {
   }
   if (extra.error) {
     await send(entry.chatId, `❌ *${entry.label}* hot poll failed: ${mint.errReason(extra.error)}`, replyExtra(intent));
+    return;
+  }
+  if (extra.presigned) {
+    await reportPresignedResults(intent, extra.presigned);
     return;
   }
   await runMintAndReport(intent);

@@ -538,7 +538,10 @@ bot.on('text', async (ctx, next) => {
       });
       unlockAttempts.delete(userId);
       const extra = result.failed.length ? `\nCould not unlock ${result.failed.length} file(s).` : '';
-      return ctx.reply(`✅ Unlocked ${result.addresses.length} wallet(s).${extra}\nAuto-lock ${config.autoLockMinutes} min.`);
+      const lockLine = wallets.autoLockDisabled()
+        ? 'Auto-lock: disabled — stays unlocked until you run /lock or the bot restarts.'
+        : `Auto-lock ${config.autoLockMinutes} min.`;
+      return ctx.reply(`✅ Unlocked ${result.addresses.length} wallet(s).${extra}\n${lockLine}`);
     } catch (e) {
       const entry = unlockAttempts.get(userId) || { count: 0, lockedAt: null };
       entry.count += 1;
@@ -667,6 +670,7 @@ async function runMintAndReport(intent) {
     const outcomes = await mint.performMint(intent);
     for (const { wallet, result, errors } of outcomes) {
       if (!result) {
+        console.error(`Mint failed — user ${intent.userId}, contract ${intent.contract}, wallet ${wallet.address}:`, errors);
         const line = mint.summarizeFailure(errors);
         await send(intent.chatId, `${maskAddress(wallet.address)}\n${line}`, replyExtra(intent));
         postDiscord({ success: false, intent, wallet, errorLine: line }).catch(() => {});
@@ -702,18 +706,14 @@ async function reportPresignedResults(intent, presigned) {
       if (info.wallet) postDiscord({ success: false, intent, wallet: info.wallet, errorLine: info.error }).catch(() => {});
       continue;
     }
-    await send(intent.chatId, `🚀 ${maskAddress(info.wallet.address)} sent via *SeaDrop.mintPublic (pre-signed)*\n\`${info.tx.hash}\``, replyExtra(intent));
-    try {
-      const receipt = await info.tx.wait();
-      await send(
-        intent.chatId,
-        `✅ Confirmed block \`${receipt.blockNumber}\`\n[tx](${chain.explorer}${info.tx.hash})`,
-        replyExtra(intent)
-      );
-      postDiscord({ success: true, intent, wallet: info.wallet, tx: info.tx }).catch(() => {});
-    } catch (e) {
-      await send(intent.chatId, `⚠️ Sent but may have reverted: ${mint.errReason(e)}`, replyExtra(intent));
-    }
+    const replaceNote = info.replacements ? ` (replaced ${info.replacements}x for gas — first attempt didn't confirm promptly)` : '';
+    await send(intent.chatId, `🚀 ${maskAddress(info.wallet.address)} sent via *SeaDrop.mintPublic*${replaceNote}\n\`${info.tx.hash}\``, replyExtra(intent));
+    await send(
+      intent.chatId,
+      `✅ Confirmed block \`${info.receipt.blockNumber}\`\n[tx](${chain.explorer}${info.tx.hash})`,
+      replyExtra(intent)
+    );
+    postDiscord({ success: true, intent, wallet: info.wallet, tx: info.tx }).catch(() => {});
   }
 }
 

@@ -35,9 +35,21 @@ If you have more than one wallet unlocked at once, every `/mint` or `/schedule` 
 
 ## How a scheduled mint fires
 
-From 30s before `start_time` the bot polls OpenSea `POST /drops/{slug}/mint`. First `200` is the trigger. That calldata is simulated (`eth_call`), then signed locally and sent. Allowlist/GTD jobs do **not** fall back to `mintPublic`. The wallet(s) polled/fired for a given job are whichever you selected when you scheduled it.
+Two different mechanisms, chosen automatically based on the stage:
+
+**Confirmed public stage** (OpenSea reports it as `public_sale`, or the stage name contains "public"): no third party involved. The bot discovers the real on-chain start time at a relaxed polling cadence while there's time to spare, switches to tight monitoring only in the final ~2 seconds before it, then at that exact moment does a fresh final check (price, balance, gas, nonce) and signs and broadcasts immediately — signing only ever happens right at that moment, not ahead of time. If the transaction doesn't confirm within 8 seconds, it's automatically resubmitted with a bumped fee (same nonce, standard replace-by-fee) up to 3 times before falling back to one longer wait for whichever attempt lands.
+
+**Allowlist (GTD/FCFS) or unrecognized stage type:** OpenSea's API is the only place the Merkle proof exists before the stage opens, so this path polls `POST /drops/{slug}/mint` every `POLL_INTERVAL_MS` starting `HOT_WINDOW_MS` before the target time, same as before — but gas is now prefetched on a slower parallel timer instead of only being fetched *after* a poll finally succeeds, removing that round-trip from the critical moment.
+
+**A raw contract address with no OpenSea link** tries generic `mint()`/`publicMint()`/`claim()` guessing first, then falls back to direct SeaDrop `mintPublic` — this order matches the more common real-world case (a "mint from website" contract, not SeaDrop-based), and is safe because every send is simulated (`eth_call`) before ever broadcasting, so a wrong guess costs a cheap read, never a real transaction.
+
+That calldata is simulated (`eth_call`) as part of building it, then signed locally and sent. Allowlist/GTD jobs do **not** fall back to `mintPublic`.
 
 You must be `/unlock`ed when it fires. The bot warns if auto-lock happens first.
+
+## Auto-lock
+
+Set `AUTO_LOCK_MINUTES=0` to disable auto-lock entirely — a wallet stays decrypted in memory until you run `/lock` yourself or the process restarts. Only recommended for genuinely single-user setups; re-enable (any positive number) before adding other testers, since it directly controls how long a decrypted key sits in memory if the server were ever compromised.
 
 ## Safety
 
